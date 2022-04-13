@@ -24,7 +24,7 @@ tshark
 wireshark
 whois
 
-virustotal page
+virustotal page.
 
 
 We will try to do a different approach and we will be using the tshark command as long as it permits it since the challenge data is a pcap file 
