@@ -1,0 +1,376 @@
+# Walkthrough: Investigating a Network Intrusion (CyberDefenders HawkEye Challenge)
+
+Welcome to this walkthrough of the CyberDefenders HawkEye challenge! In this exercise, we'll step into the shoes of a SOC analyst to investigate a suspicious network trace. The scenario is that an accountant in our organization received a phishing email with a download link, and we suspect that this has led to a compromise. Our mission is to analyze the provided network capture (`.pcap` file) to understand what happened and uncover any data exfiltration attempts.
+
+## The Scenario
+
+An accountant received an email with a link to an invoice. Shortly after, suspicious network activity was detected. We have been provided with a network trace (`stealer.pcap`) and a series of questions to guide our investigation.
+
+## Our Toolkit
+
+For this investigation, we'll primarily be using command-line tools to analyze the `.pcap` file. This approach is not only efficient but also a great way to learn the ins and outs of these powerful utilities. The main tools we'll be using are:
+
+*   `capinfos`: A tool from the Wireshark suite that provides high-level information about a capture file.
+*   `tshark`: The command-line equivalent of Wireshark, which allows us to dissect and analyze network traffic in great detail.
+*   `whois`: A utility to look up information about domain names and IP addresses.
+
+While GUI tools like Wireshark are excellent, this guide will focus on a command-line approach to sharpen our skills. Let's dive in!
+
+---
+
+## The Investigation: Answering the Questions
+
+### 1. How many packets does the capture have?
+
+**My Thought Process:** Before diving deep, it's always a good idea to get a general overview of the capture file. `capinfos` is the perfect tool for this. It can quickly give us statistics about the `.pcap` file, including the total number of packets.
+
+**Command:**
+```bash
+capinfos stealer.pcap
+```
+
+**Explanation:**
+This command prints a summary of the `stealer.pcap` file. The output includes details like the file size, capture duration, and, most importantly for this question, the number of packets.
+
+**Answer:** 4003
+
+### 2. At what time was the first packet captured?
+
+**My Thought Process:** The `capinfos` output from the previous question also contains timestamp information. We can find the time the first packet was captured there. We need to be mindful of timezones and convert to UTC if necessary.
+
+**Command:**
+```bash
+capinfos stealer.pcap
+```
+
+**Explanation:**
+Looking at the `capinfos` output, we can find the "First packet time". The question asks for the time in UTC. My local time is GMT+8, so I need to adjust the time accordingly.
+
+**Answer:** 2019-04-10 20:37:07 UTC
+
+### 3. What is the duration of the capture?
+
+**My Thought Process:** Again, `capinfos` provides this information directly. We can look at the "Capture duration" field in the output.
+
+**Command:**
+```bash
+capinfos stealer.pcap
+```
+
+**Explanation:**
+The output of `capinfos` includes a "Capture duration" field, which tells us the total time elapsed between the first and last packets in the capture.
+
+**Answer:** 01:03:41
+
+### 4. What is the most active computer at the link level?
+
+**My Thought Process:** To find the most active computer, we need to look at the conversations happening on the network. `tshark` can help us with this. We can use it to generate a summary of conversations at the Ethernet (link) level and then identify the MAC address with the most traffic.
+
+**Command:**
+```bash
+tshark -r stealer.pcap -n -q -z conv,eth
+```
+
+**Explanation:**
+*   `-r stealer.pcap`: Specifies the input file.
+*   `-n`: Disables network object name resolution (so we see MAC addresses instead of hostnames).
+*   `-q`: Suppresses the packet details, showing only the conversation summary.
+*   `-z conv,eth`: Generates a conversation list for Ethernet traffic.
+
+By looking at the output, we can see the MAC address that has sent and received the most frames and bytes.
+
+**Answer:** 00:08:02:1c:47:ae
+
+### 5. Manufacturer of the NIC of the most active system at the link level?
+
+**My Thought Process:** Now that we have the MAC address of the most active system, we can look up the manufacturer of the Network Interface Card (NIC). The first three octets of a MAC address are the Organizationally Unique Identifier (OUI), which can be used to identify the vendor. We can use an online tool like macaddress.io for this.
+
+**Answer:** Hewlett-Packard
+
+### 6. Where is the headquarter of the company that manufactured the NIC of the most active computer at the link level?
+
+**My Thought Process:** With the manufacturer's name (Hewlett-Packard), a quick web search will tell us where their headquarters are located.
+
+**Answer:** Palo Alto
+
+### 7. The organization works with private addressing and netmask /24. How many computers in the organization are involved in the capture?
+
+**My Thought Process:** We need to identify the number of unique internal IP addresses involved in the capture. We can use `tshark` to list all IP conversations and then count the number of unique IP addresses that fall within the private address space.
+
+**Command:**
+```bash
+tshark -r stealer.pcap -q -z conv,ip
+```
+
+**Explanation:**
+This command is similar to the one we used for Ethernet conversations, but this time we are looking at IP conversations (`conv,ip`). By examining the output, we can identify the IP addresses that belong to the organization's internal network (in this case, the `10.4.10.0/24` range).
+
+**Internal IPs found:**
+*   `10.4.10.2`
+*   `10.4.10.4`
+*   `10.4.10.132`
+
+**Answer:** 3
+
+### 8. What is the name of the most active computer at the network level?
+
+**My Thought Process:** From the previous question, we know that `10.4.10.132` is the most active internal IP address. We can now try to find its hostname. The NetBIOS Name Service (NBNS) is often used in Windows environments for name resolution, so we can filter for NBNS traffic associated with this IP address.
+
+**Command:**
+```bash
+tshark -r stealer.pcap -Y 'ip.addr == 10.4.10.132 && nbns'
+```
+
+**Explanation:**
+*   `-Y 'ip.addr == 10.4.10.132 && nbns'`: This is a display filter that tells `tshark` to only show packets that have the IP address `10.4.10.132` and are related to the NBNS protocol.
+
+By inspecting the output, we can find the hostname registration for this IP.
+
+**Answer:** BEIJING-5CD1-PC
+
+### 9. What is the IP of the organization's DNS server?
+
+**My Thought Process:** The victim's machine (`10.4.10.132`) will send DNS queries to a local DNS server. We can filter for DNS traffic from the victim's machine and look for the destination IP of the DNS queries.
+
+**Command:**
+```bash
+tshark -r stealer.pcap -Y 'ip.addr == 10.4.10.132 && dns' | grep "Standard query response" | awk '{print $3}' | sort -rn | uniq
+```
+
+**Explanation:**
+This is a more complex command that chains together a few utilities:
+*   `tshark -r stealer.pcap -Y 'ip.addr == 10.4.10.132 && dns'`: Filters for DNS traffic involving the victim's IP.
+*   `grep "Standard query response"`: Filters for DNS responses.
+*   `awk '{print $3}'`: Prints the third field of the output, which is the source IP of the DNS response (the DNS server).
+*   `sort -rn | uniq`: Sorts the results and shows only the unique IP addresses.
+
+**Answer:** 10.4.10.4
+
+### 10. What domain is the victim asking about in packet 204?
+
+**My Thought Process:** We need to inspect a specific packet, number 204. We can use `tshark` to display this packet and see the DNS query it contains.
+
+**Command:**
+```bash
+tshark -r stealer.pcap -c 1 -S " " -V -R "frame.number == 204"
+```
+**Explanation:**
+*   `-c 1`: This will stop tshark after reading one packet.
+*   `-S " "`: This sets the separator between packets to a single space.
+*   `-V`: This will cause tshark to output a detailed view of the packet.
+*   `-R "frame.number == 204"`: This is a read filter that tells tshark to only process the packet with frame number 204.
+
+**Answer:** proforma-invoices.com
+
+### 11. What is the IP of the domain in the previous question?
+
+**My Thought Process:** After the DNS query for `proforma-invoices.com`, there should be a DNS response containing the IP address. We can filter for DNS traffic related to this domain to find the response.
+
+**Command:**
+```bash
+tshark -r stealer.pcap -Y 'dns.qry.name == "proforma-invoices.com"'
+```
+
+**Explanation:**
+This command filters for DNS packets where the query name is `proforma-invoices.com`. The output will show both the query and the response, which includes the IP address.
+
+**Answer:** 217.182.138.150
+
+### 12. Indicate the country to which the IP in the previous section belongs.
+
+**My Thought Process:** Now that we have the IP address of the malicious domain, we can use the `whois` utility to find out more about it, including the country where it is registered.
+
+**Command:**
+```bash
+whois 217.182.138.150 | grep -i country
+```
+
+**Explanation:**
+*   `whois 217.182.138.150`: Performs a `whois` lookup on the IP address.
+*   `grep -i country`: Filters the output to show only the lines containing the word "country" (case-insensitive).
+
+**Answer:** France
+
+### 13. What operating system does the victim's computer run?
+
+**My Thought Process:** The User-Agent string in HTTP requests often reveals the operating system of the client. We can filter for HTTP traffic from the victim's machine and extract the User-Agent string.
+
+**Command:**
+```bash
+tshark -r stealer.pcap -Y 'ip.addr == 10.4.10.132 && http.user_agent' -T fields -e http.user_agent | uniq
+```
+
+**Explanation:**
+*   `-Y 'ip.addr == 10.4.10.132 && http.user_agent'`: Filters for packets from the victim's IP that contain a User-Agent string.
+*   `-T fields -e http.user_agent`: Tells `tshark` to output only the value of the `http.user_agent` field.
+*   `uniq`: Shows only the unique User-Agent strings.
+
+The User-Agent string `Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.1; ...)` indicates the operating system.
+
+**Answer:** Windows NT 6.1
+
+### 14. What is the name of the malicious file downloaded by the accountant?
+
+**My Thought Process:** The accountant likely downloaded the malicious file over HTTP. We can look for HTTP GET requests from the victim's machine to see what files were downloaded.
+
+**Command:**
+```bash
+tshark -r stealer.pcap -Y 'ip.addr == 10.4.10.132 && http.request.method == "GET"' -T fields -e http.host -e http.request.uri | uniq
+```
+
+**Explanation:**
+*   `-Y 'ip.addr == 10.4.10.132 && http.request.method == "GET"'`: Filters for HTTP GET requests from the victim's IP.
+*   `-T fields -e http.host -e http.request.uri`: Outputs the hostname and the requested URI.
+*   `uniq`: Shows the unique download requests.
+
+The output will show the download of an executable file.
+
+**Answer:** tkraw_Protected99.exe
+
+### 15. What is the md5 hash of the downloaded file?
+
+**My Thought Process:** We can extract the downloaded file from the `.pcap` and then calculate its MD5 hash. `tshark` can export HTTP objects.
+
+**Command:**
+```bash
+tshark -r stealer.pcap --export-objects http,extracted
+md5sum extracted/tkraw_Protected99.exe
+```
+
+**Explanation:**
+*   `tshark -r stealer.pcap --export-objects http,extracted`: This command extracts all objects transferred over HTTP and saves them in a directory named `extracted`.
+*   `md5sum extracted/tkraw_Protected99.exe`: This command calculates the MD5 hash of the extracted file.
+
+**Answer:** 71826ba081e303866ce2a2534491a2f7
+
+### 16. What is the name of the malware according to Malwarebytes?
+
+**My Thought Process:** Now that we have the hash of the malicious file, we can check it against a threat intelligence database like VirusTotal. By uploading the file or searching for the hash on VirusTotal, we can see how different antivirus engines classify it.
+
+**Answer:** Spyware.HawkEyeKeyLogger
+
+### 17. What software runs the webserver that hosts the malware?
+
+**My Thought Process:** The `Server` header in HTTP responses from the webserver can tell us what software it is running. We can filter for HTTP traffic from the malicious IP and look for the `Server` header.
+
+**Command:**
+```bash
+tshark -r stealer.pcap -Y 'ip.addr == 217.182.138.150 && http.server' -T fields -e http.server | sort -nr | uniq
+```
+
+**Explanation:**
+*   `-Y 'ip.addr == 217.182.138.150 && http.server'`: Filters for packets from the malicious IP that contain a `Server` header.
+*   `-T fields -e http.server`: Outputs the value of the `http.server` field.
+*   `sort -nr | uniq`: Shows the unique server names.
+
+**Answer:** LiteSpeed
+
+### 18. What is the public IP of the victim's computer?
+
+**My Thought Process:** The victim's computer is behind a NAT, so it has a private IP address (`10.4.10.132`). To find its public IP, we can look for traffic to services that report the client's IP address, such as `whatismyipaddress.com`.
+
+**Command:**
+```bash
+tshark -r stealer.pcap -Y "http.host == \"bot.whatismyipaddress.com\"" -T fields -e "text"
+```
+**Explanation:**
+*   `-Y "http.host == \"bot.whatismyipaddress.com\""`: This filter looks for HTTP requests to the host `bot.whatismyipaddress.com`.
+*   `-T fields -e "text"`: This extracts the text field from the packets, which should contain the public IP address.
+
+**Answer:** 173.66.146.112
+
+### 19. In which country is the email server to which the stolen information is sent?
+
+**My Thought Process:** We need to find the email server that the malware is communicating with. We can look for SMTP traffic and identify the server's domain. Then, we can use `whois` to find the country. The SMTP traffic is sent to `secureserver.net`.
+
+**Command:**
+```bash
+whois secureserver.net | grep -i country
+```
+
+**Answer:** United States
+
+### 20. What is the domain's creation date to which the information is exfiltrated?
+
+**My Thought Process:** The malware is sending stolen data via email. We need to find the recipient's email address in the SMTP traffic, extract the domain, and then use `whois` to find the creation date of that domain.
+
+**Command:**
+```bash
+tshark -Y 'ip.addr == 10.4.10.132 && smtp' -r stealer.pcap | grep RCPT | awk '{print $10}'| cut -d: -f2 | cut -d@ -f2| cut -d'>' -f1| uniq| xargs whois |grep "Creation Date"
+```
+
+**Explanation:**
+This is another complex command chain:
+*   `tshark -Y 'ip.addr == 10.4.10.132 && smtp' -r stealer.pcap`: Filters for SMTP traffic from the victim's IP.
+*   `grep RCPT`: Finds the lines with the recipient's address.
+*   The `awk` and `cut` commands are used to parse the output and extract just the domain name (`macwinlogistics.in`).
+*   `xargs whois | grep "Creation Date"`: Performs a `whois` lookup on the domain and finds the creation date.
+
+**Answer:** 2014-02-08
+
+### 21. Analyzing the first extraction of information. What software runs the email server to which the stolen data is sent?
+
+**My Thought Process:** The email server's software is often announced in the banner that is sent when a client connects. We can look for SMTP response code 220, which is the welcome message from the server.
+
+**Command:**
+```bash
+tshark -Y 'ip.addr == 10.4.10.132 && smtp.response.code == 220' -r stealer.pcap
+```
+
+**Explanation:**
+This command filters for SMTP packets from the victim's IP that have a response code of 220. The output will show the server's banner, which includes the software name and version.
+
+**Answer:** Exim 4.91
+
+### 22. To which email account is the stolen information sent?
+
+**My Thought Process:** We can find the recipient's email address by looking for the `RCPT TO:` command in the SMTP traffic.
+
+**Command:**
+```bash
+tshark -Y 'ip.addr == 10.4.10.132 && smtp' -r stealer.pcap | grep "RCPT TO:"
+```
+
+**Explanation:**
+This command filters for SMTP traffic from the victim's IP and then searches for lines containing "RCPT TO:".
+
+**Answer:** sales.del@macwinlogistics.in
+
+### 23. What is the password used by the malware to send the email?
+
+**My Thought Process:** The malware needs to authenticate to the SMTP server to send email. We can look for the authentication process in the SMTP traffic. The password is often sent in clear text after the `AUTH LOGIN` command.
+
+**Command:**
+```bash
+tshark -Y 'ip.addr == 10.4.10.132 && smtp' -r stealer.pcap | grep -i -C2 "sales.del@macwinlogistics.in" | grep -i -C2 pass | tail
+```
+
+**Explanation:**
+This command is a bit more complex:
+*   It first filters for SMTP traffic from the victim's IP.
+*   Then it looks for the recipient's email address and the word "pass" in the surrounding lines.
+*   The `tail` command shows the last few lines of the output, where the password is likely to be found.
+
+**Answer:** Sales@23
+
+### 24. Which malware variant exfiltrated the data?
+
+**My Thought Process:** This question requires some external research. Based on the malware's behavior (keylogging, data exfiltration via SMTP), and the name "HawkEye", we can search online for more information about this malware family.
+
+**Answer:** Reborn v9
+
+### 25. What are the bankofamerica access credentials? (username:password)
+using wireshark , search for tcp.stream eq 37
+
+**Answer:** roman.mcguire:P@ssw0rd$
+
+### 26. Every how many minutes does the collected data get exfiltrated?
+using wireshark, search using (ip.src == 10.4.10.132) && (ip.dst == 23.229.162.69) -
+
+**Answer:** 10
+
+---
+
+## Conclusion
+
+This investigation took us from a high-level overview of a `.pcap` file to a detailed analysis of the malware's behavior. We were able to identify the victim's machine, the malicious file they downloaded, and the extent of the data exfiltration. This exercise highlights the power of command-line tools like `tshark` for network forensics and the importance of being able to dissect network traffic to understand security incidents.
